@@ -8,6 +8,9 @@ A browser-based Retrieval-Augmented Generation (RAG) demo that processes PDF and
 - **In-Browser Embeddings**: Uses Xenova/transformers for client-side text embeddings
 - **Semantic Search**: Finds relevant document chunks using cosine similarity
 - **Ollama Integration**: Sends context to local Ollama instance for question answering
+- **Chat Interface**: Interactive Q&A history with markdown rendering
+- **Enhanced Prompting**: Optimized prompts for better document analysis and summarization
+- **Markdown Support**: Renders formatted responses with lists, headers, and code blocks
 
 ## Prerequisites
 
@@ -46,9 +49,11 @@ Navigate to: `http://localhost:8000/` (opens automatically)
 ## Usage
 
 1. **Wait for Model Loading**: The embedding model (~23MB) downloads on first use
-2. **Upload a File**: Choose a PDF or Excel file
-3. **Ask Questions**: Type your question and click "Ask" or press Enter
-4. **View Results**: The system finds relevant content and generates an answer
+2. **Upload a File**: Choose a PDF or Excel file from the left panel
+3. **Ask Questions**: Type your question in the text area and click "Ask Question" or press Enter
+4. **View Chat History**: See all questions and formatted answers in the right panel
+5. **Continue Conversation**: Ask follow-up questions without clearing previous ones
+6. **Clear History**: Use the "Clear History" button to start fresh
 
 ## Troubleshooting
 
@@ -80,13 +85,16 @@ Navigate to: `http://localhost:8000/` (opens automatically)
 - **Embeddings**: Xenova/all-MiniLM-L6-v2 (runs in browser)
 - **File Processing**: PDF.js for PDFs, SheetJS for Excel
 - **LLM**: Ollama API (local)
-- **Styling**: Tailwind CSS (CDN)
+- **Styling**: Tailwind CSS (CDN) with responsive grid layout
+- **Markdown Rendering**: Marked.js for formatting LLM responses
+- **UI**: Two-panel layout with file upload/query on left, chat history on right
 
 ## File Structure
 
 ```
 ├── index.html          # Main demo page
 ├── serve.py            # Local HTTP server with CORS
+├── LICENSE             # MIT license
 └── README.md           # This file
 ```
 
@@ -96,3 +104,9 @@ Navigate to: `http://localhost:8000/` (opens automatically)
 - For production use, download and serve assets locally
 - The demo processes files entirely in the browser (no server upload)
 - Ollama runs locally, so your data stays on your machine
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+Copyright (c) 2025 Jascha Wanger / Tarnover, LLC

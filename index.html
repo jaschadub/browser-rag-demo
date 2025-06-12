@@ -7,9 +7,10 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 </head>
 <body class="bg-gray-50 text-gray-800">
-  <div class="max-w-2xl mx-auto p-6 space-y-6">
+  <div class="max-w-6xl mx-auto p-6 space-y-6">
     <h1 class="text-2xl font-bold">🧠 In-Browser RAG Demo (PDF + Excel)</h1>
     
     <div class="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
@@ -17,13 +18,37 @@
       <p class="text-sm mt-1">Run: <code class="bg-gray-200 px-1 rounded">python3 serve.py</code> then open <code class="bg-gray-200 px-1 rounded">http://localhost:8000/</code></p>
     </div>
 
-    <div class="space-y-4">
-      <input type="file" id="fileInput" accept=".pdf,.xlsx" class="block w-full border border-gray-300 rounded px-4 py-2" />
-      <textarea id="queryInput" placeholder="Ask a question..." class="w-full border rounded px-4 py-2"></textarea>
-      <button id="queryBtn" class="bg-blue-600 text-white px-4 py-2 rounded disabled:bg-gray-400 disabled:cursor-not-allowed" disabled>Ask</button>
-    </div>
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- Left Panel: File Upload and Query -->
+      <div class="space-y-4">
+        <div class="bg-white p-4 rounded shadow">
+          <h2 class="text-lg font-semibold mb-3">📁 Upload Document</h2>
+          <input type="file" id="fileInput" accept=".pdf,.xlsx" class="block w-full border border-gray-300 rounded px-4 py-2" />
+          <div id="fileStatus" class="mt-2 text-sm text-gray-600"></div>
+        </div>
+        
+        <div class="bg-white p-4 rounded shadow">
+          <h2 class="text-lg font-semibold mb-3">❓ Ask Questions</h2>
+          <div class="space-y-3">
+            <textarea id="queryInput" placeholder="Ask a question about your document..." class="w-full border rounded px-4 py-2 h-20 resize-none"></textarea>
+            <div class="flex space-x-2">
+              <button id="queryBtn" class="bg-blue-600 text-white px-4 py-2 rounded disabled:bg-gray-400 disabled:cursor-not-allowed flex-1" disabled>Ask Question</button>
+              <button id="clearBtn" class="bg-gray-500 text-white px-4 py-2 rounded">Clear History</button>
+            </div>
+          </div>
+        </div>
+      </div>
 
-    <div id="output" class="mt-6 bg-white p-4 rounded shadow"></div>
+      <!-- Right Panel: Chat History -->
+      <div class="bg-white rounded shadow">
+        <div class="p-4 border-b">
+          <h2 class="text-lg font-semibold">💬 Q&A History</h2>
+        </div>
+        <div id="chatHistory" class="h-96 overflow-y-auto p-4 space-y-4">
+          <div class="text-gray-500 text-center">Upload a document and ask questions to see the conversation here.</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script type="module">
@@ -38,33 +63,38 @@
     let embeddings = [];
     let embedder;
     let modelReady = false;
+    let chatHistory = [];
 
     async function initModel() {
       try {
         // Check if we're running from file:// protocol
         if (window.location.protocol === 'file:') {
-          document.getElementById("output").innerHTML = `<strong>⚠️ CORS Error:</strong> This demo must be served from an HTTP server.<br><br>
+          addToChat('system', `<strong>⚠️ CORS Error:</strong> This demo must be served from an HTTP server.<br><br>
             <strong>To fix:</strong><br>
             1. Run: <code>python3 serve.py</code><br>
-            2. Open: <code>http://localhost:8000/index-ollama.html</code><br><br>
-            <em>The transformers library cannot load models from file:// URLs due to browser security restrictions.</em>`;
+            2. Open: <code>http://localhost:8000/</code><br><br>
+            <em>The transformers library cannot load models from file:// URLs due to browser security restrictions.</em>`);
           return;
         }
         
-        document.getElementById("output").textContent = "Loading embedding model (this may take a few minutes on first run)...";
+        updateFileStatus("Loading embedding model (this may take a few minutes on first run)...");
         embedder = await pipeline('feature-extraction', modelName);
         modelReady = true;
-        document.getElementById("output").textContent = "Model loaded. Upload a file to begin.";
+        updateFileStatus("Model loaded. Upload a file to begin.");
         updateButtonState();
       } catch (error) {
-        document.getElementById("output").innerHTML = `<strong>Error loading model:</strong> ${error.message}<br><br>
+        updateFileStatus(`<strong>Error loading model:</strong> ${error.message}<br><br>
           <strong>Possible solutions:</strong><br>
           • Make sure you're running from HTTP server (not file://)<br>
           • Check your internet connection (model downloads on first use)<br>
           • Try refreshing the page<br><br>
-          <em>Model size: ~23MB - first load may take several minutes</em>`;
+          <em>Model size: ~23MB - first load may take several minutes</em>`);
         console.error('Model loading error:', error);
       }
+    }
+
+    function updateFileStatus(message) {
+      document.getElementById("fileStatus").innerHTML = message;
     }
 
     function updateButtonState() {
@@ -72,6 +102,62 @@
       const hasFile = chunks.length > 0;
       const hasQuery = document.getElementById("queryInput").value.trim().length > 0;
       queryBtn.disabled = !modelReady || !hasFile || !hasQuery;
+    }
+
+    function addToChat(type, content, question = '') {
+      const chatContainer = document.getElementById("chatHistory");
+      const timestamp = new Date().toLocaleTimeString();
+      
+      if (chatContainer.children.length === 1 && chatContainer.children[0].textContent.includes("Upload a document")) {
+        chatContainer.innerHTML = '';
+      }
+      
+      const messageDiv = document.createElement('div');
+      messageDiv.className = 'border-b border-gray-200 pb-4';
+      
+      if (type === 'question') {
+        messageDiv.innerHTML = `
+          <div class="flex items-start space-x-3">
+            <div class="bg-blue-100 rounded-full p-2 mt-1">
+              <span class="text-blue-600 font-semibold text-sm">Q</span>
+            </div>
+            <div class="flex-1">
+              <div class="text-sm text-gray-500">${timestamp}</div>
+              <div class="mt-1 text-gray-800">${content}</div>
+            </div>
+          </div>
+        `;
+      } else if (type === 'answer') {
+        messageDiv.innerHTML = `
+          <div class="flex items-start space-x-3 mt-3">
+            <div class="bg-green-100 rounded-full p-2 mt-1">
+              <span class="text-green-600 font-semibold text-sm">A</span>
+            </div>
+            <div class="flex-1">
+              <div class="prose prose-sm max-w-none">${content}</div>
+            </div>
+          </div>
+        `;
+      } else if (type === 'system') {
+        messageDiv.innerHTML = `
+          <div class="bg-yellow-50 border border-yellow-200 rounded p-3">
+            <div class="text-sm">${content}</div>
+          </div>
+        `;
+      }
+      
+      chatContainer.appendChild(messageDiv);
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      
+      if (type === 'question' || type === 'answer') {
+        chatHistory.push({ type, content, question, timestamp });
+      }
+    }
+
+    function clearChatHistory() {
+      chatHistory = [];
+      const chatContainer = document.getElementById("chatHistory");
+      chatContainer.innerHTML = '<div class="text-gray-500 text-center">Chat history cleared. Ask a new question to start.</div>';
     }
 
     async function embedText(text) {
@@ -133,11 +219,11 @@
 
     async function processFile(file) {
       if (!modelReady) {
-        document.getElementById("output").textContent = "Please wait for the model to load first.";
+        updateFileStatus("Please wait for the model to load first.");
         return;
       }
       
-      document.getElementById("output").textContent = "Parsing and embedding...";
+      updateFileStatus("Parsing and embedding...");
       let text = "";
       try {
         if (file.name.endsWith(".pdf")) {
@@ -147,36 +233,58 @@
         }
         chunks = chunkText(text);
         embeddings = await Promise.all(chunks.map(embedText));
-        document.getElementById("output").textContent = `Processed ${chunks.length} chunks. Ready to answer questions!`;
+        updateFileStatus(`✅ Processed ${chunks.length} chunks from "${file.name}". Ready to answer questions!`);
         updateButtonState();
+        
+        // Clear previous chat when new file is uploaded
+        clearChatHistory();
+        addToChat('system', `📄 Document "${file.name}" has been processed and is ready for questions.`);
       } catch (error) {
-        document.getElementById("output").innerHTML = `<strong>Error processing file:</strong> ${error.message}`;
+        updateFileStatus(`<strong>Error processing file:</strong> ${error.message}`);
         console.error('File processing error:', error);
       }
     }
 
     async function askQuestion(query) {
       if (!modelReady) {
-        document.getElementById("output").textContent = "Please wait for the model to load.";
+        addToChat('system', "Please wait for the model to load.");
         return;
       }
       
       if (chunks.length === 0) {
-        document.getElementById("output").textContent = "Please upload a file first.";
+        addToChat('system', "Please upload a file first.");
         return;
       }
 
-      document.getElementById("output").textContent = "Searching for relevant content...";
+      // Add question to chat
+      addToChat('question', query);
+      
+      // Clear input field
+      document.getElementById("queryInput").value = '';
+      updateButtonState();
       
       try {
         const queryEmbedding = await embedText(query);
         const scored = embeddings.map((vec, i) => ({ score: cosineSim(queryEmbedding, vec), text: chunks[i] }));
         scored.sort((a, b) => b.score - a.score);
-        const topChunks = scored.slice(0, 3).map(c => c.text).join("\n");
+        const topChunks = scored.slice(0, 3).map(c => c.text).join("\n\n");
 
-        const prompt = `Answer the following question using the context below.\n\nContext:\n${topChunks}\n\nQuestion: ${query}`;
+        // Enhanced prompt for better analysis and markdown output
+        const prompt = `You are an expert document analyst. Using only the provided context, answer the user's question as clearly and comprehensively as possible.
 
-        document.getElementById("output").textContent = "Asking Ollama...";
+INSTRUCTIONS:
+- Use markdown formatting for better readability (headers, lists, code blocks, etc.)
+- If summarizing, use bullet points or numbered lists
+- Quote relevant sections from the document when appropriate
+- If the context is insufficient to answer the question, clearly state this
+- Be concise but thorough in your analysis
+
+CONTEXT:
+${topChunks}
+
+QUESTION: ${query}
+
+ANSWER:`;
 
         const res = await fetch("http://localhost:11434/api/chat", {
           method: "POST",
@@ -186,7 +294,7 @@
           body: JSON.stringify({
             model: "gemma3:12b",
             messages: [
-              { role: "system", content: "You are a helpful assistant. Answer based on the provided context." },
+              { role: "system", content: "You are an expert document analyst. Always respond in well-formatted markdown." },
               { role: "user", content: prompt }
             ],
             stream: false
@@ -199,24 +307,22 @@
 
         const json = await res.json();
         const answer = json.message?.content || json.choices?.[0]?.message?.content || "No response received.";
-        document.getElementById("output").innerHTML = `<strong>Answer:</strong><br>${answer.replace(/\n/g, '<br>')}`;
+        
+        // Render markdown to HTML
+        const htmlAnswer = marked.parse(answer);
+        addToChat('answer', htmlAnswer, query);
+        
       } catch (error) {
-        let errorMsg = `<strong>Error:</strong> ${error.message}<br><br>`;
+        let errorMsg = `**Error:** ${error.message}\n\n`;
         
         if (error.message.includes('CORS') || error.message.includes('NetworkError')) {
-          errorMsg += `<strong>CORS Issue Detected:</strong><br>
-            • Ollama doesn't allow cross-origin requests by default<br>
-            • Start Ollama with CORS enabled: <code>OLLAMA_ORIGINS=* ollama serve</code><br>
-            • Or use a browser extension to disable CORS (for testing only)<br><br>`;
+          errorMsg += `**CORS Issue Detected:**\n- Ollama doesn't allow cross-origin requests by default\n- Start Ollama with CORS enabled: \`OLLAMA_ORIGINS=* ollama serve\`\n- Or use a browser extension to disable CORS (for testing only)\n\n`;
         }
         
-        errorMsg += `<em>Troubleshooting checklist:</em><br>
-          • Make sure Ollama is running: <code>ollama serve</code><br>
-          • Check if the model is available: <code>ollama list</code><br>
-          • Try pulling the model: <code>ollama pull gemma3:12b</code><br>
-          • For CORS: <code>OLLAMA_ORIGINS=* ollama serve</code>`;
-          
-        document.getElementById("output").innerHTML = errorMsg;
+        errorMsg += `**Troubleshooting checklist:**\n- Make sure Ollama is running: \`ollama serve\`\n- Check if the model is available: \`ollama list\`\n- Try pulling the model: \`ollama pull gemma3:12b\`\n- For CORS: \`OLLAMA_ORIGINS=* ollama serve\``;
+        
+        const htmlError = marked.parse(errorMsg);
+        addToChat('answer', htmlError, query);
       }
     }
 
@@ -231,9 +337,14 @@
       if (query) askQuestion(query);
     });
 
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      clearChatHistory();
+    });
+
     document.getElementById("queryInput").addEventListener("input", updateButtonState);
     document.getElementById("queryInput").addEventListener("keypress", (e) => {
-      if (e.key === "Enter" && !document.getElementById("queryBtn").disabled) {
+      if (e.key === "Enter" && !e.shiftKey && !document.getElementById("queryBtn").disabled) {
+        e.preventDefault();
         const query = document.getElementById("queryInput").value.trim();
         if (query) askQuestion(query);
       }
