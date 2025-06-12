@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>In-Browser RAG Demo</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body class="bg-gray-50 text-gray-800">
+  <div class="max-w-2xl mx-auto p-6 space-y-6">
+    <h1 class="text-2xl font-bold">🧠 In-Browser RAG Demo (PDF + Excel)</h1>
+    
+    <div class="bg-yellow-100 border-l-4 border-yellow-500 p-4 mb-4">
+      <p class="text-sm"><strong>⚠️ Important:</strong> This demo must be served from an HTTP server to work properly.</p>
+      <p class="text-sm mt-1">Run: <code class="bg-gray-200 px-1 rounded">python3 serve.py</code> then open <code class="bg-gray-200 px-1 rounded">http://localhost:8000/</code></p>
+    </div>
+
+    <div class="space-y-4">
+      <input type="file" id="fileInput" accept=".pdf,.xlsx" class="block w-full border border-gray-300 rounded px-4 py-2" />
+      <textarea id="queryInput" placeholder="Ask a question..." class="w-full border rounded px-4 py-2"></textarea>
+      <button id="queryBtn" class="bg-blue-600 text-white px-4 py-2 rounded disabled:bg-gray-400 disabled:cursor-not-allowed" disabled>Ask</button>
+    </div>
+
+    <div id="output" class="mt-6 bg-white p-4 rounded shadow"></div>
+  </div>
+
+  <script type="module">
+    // Configure PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+    
+    // Import transformers
+    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.6.0/dist/transformers.min.js';
+    
+    const modelName = 'Xenova/all-MiniLM-L6-v2';
+    let chunks = [];
+    let embeddings = [];
+    let embedder;
+    let modelReady = false;
+
+    async function initModel() {
+      try {
+        // Check if we're running from file:// protocol
+        if (window.location.protocol === 'file:') {
+          document.getElementById("output").innerHTML = `<strong>⚠️ CORS Error:</strong> This demo must be served from an HTTP server.<br><br>
+            <strong>To fix:</strong><br>
+            1. Run: <code>python3 serve.py</code><br>
+            2. Open: <code>http://localhost:8000/index-ollama.html</code><br><br>
+            <em>The transformers library cannot load models from file:// URLs due to browser security restrictions.</em>`;
+          return;
+        }
+        
+        document.getElementById("output").textContent = "Loading embedding model (this may take a few minutes on first run)...";
+        embedder = await pipeline('feature-extraction', modelName);
+        modelReady = true;
+        document.getElementById("output").textContent = "Model loaded. Upload a file to begin.";
+        updateButtonState();
+      } catch (error) {
+        document.getElementById("output").innerHTML = `<strong>Error loading model:</strong> ${error.message}<br><br>
+          <strong>Possible solutions:</strong><br>
+          • Make sure you're running from HTTP server (not file://)<br>
+          • Check your internet connection (model downloads on first use)<br>
+          • Try refreshing the page<br><br>
+          <em>Model size: ~23MB - first load may take several minutes</em>`;
+        console.error('Model loading error:', error);
+      }
+    }
+
+    function updateButtonState() {
+      const queryBtn = document.getElementById("queryBtn");
+      const hasFile = chunks.length > 0;
+      const hasQuery = document.getElementById("queryInput").value.trim().length > 0;
+      queryBtn.disabled = !modelReady || !hasFile || !hasQuery;
+    }
+
+    async function embedText(text) {
+      const output = await embedder(text, { pooling: 'mean', normalize: true });
+      return output.data;
+    }
+
+    function cosineSim(a, b) {
+      let dot = 0, normA = 0, normB = 0;
+      for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        normA += a[i] * a[i];
+        normB += b[i] * b[i];
+      }
+      return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+    }
+
+    function chunkText(text, size = 500) {
+      const sentences = text.match(/[^.!?\n]+[.!?\n]+/g) || [text];
+      const result = [];
+      let chunk = "";
+      for (let sentence of sentences) {
+        if ((chunk + sentence).length < size) {
+          chunk += sentence;
+        } else {
+          result.push(chunk);
+          chunk = sentence;
+        }
+      }
+      if (chunk) result.push(chunk);
+      return result;
+    }
+
+    async function handlePDF(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      let text = "";
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const content = await page.getTextContent();
+        text += content.items.map(item => item.str).join(" ") + "\n";
+      }
+      return text;
+    }
+
+    async function handleExcel(file) {
+      const arrayBuffer = await file.arrayBuffer();
+      const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+      let text = "";
+      workbook.SheetNames.forEach(name => {
+        const sheet = workbook.Sheets[name];
+        const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+        rows.forEach(row => {
+          text += row.join(" \t ") + "\n";
+        });
+      });
+      return text;
+    }
+
+    async function processFile(file) {
+      if (!modelReady) {
+        document.getElementById("output").textContent = "Please wait for the model to load first.";
+        return;
+      }
+      
+      document.getElementById("output").textContent = "Parsing and embedding...";
+      let text = "";
+      try {
+        if (file.name.endsWith(".pdf")) {
+          text = await handlePDF(file);
+        } else if (file.name.endsWith(".xlsx")) {
+          text = await handleExcel(file);
+        }
+        chunks = chunkText(text);
+        embeddings = await Promise.all(chunks.map(embedText));
+        document.getElementById("output").textContent = `Processed ${chunks.length} chunks. Ready to answer questions!`;
+        updateButtonState();
+      } catch (error) {
+        document.getElementById("output").innerHTML = `<strong>Error processing file:</strong> ${error.message}`;
+        console.error('File processing error:', error);
+      }
+    }
+
+    async function askQuestion(query) {
+      if (!modelReady) {
+        document.getElementById("output").textContent = "Please wait for the model to load.";
+        return;
+      }
+      
+      if (chunks.length === 0) {
+        document.getElementById("output").textContent = "Please upload a file first.";
+        return;
+      }
+
+      document.getElementById("output").textContent = "Searching for relevant content...";
+      
+      try {
+        const queryEmbedding = await embedText(query);
+        const scored = embeddings.map((vec, i) => ({ score: cosineSim(queryEmbedding, vec), text: chunks[i] }));
+        scored.sort((a, b) => b.score - a.score);
+        const topChunks = scored.slice(0, 3).map(c => c.text).join("\n");
+
+        const prompt = `Answer the following question using the context below.\n\nContext:\n${topChunks}\n\nQuestion: ${query}`;
+
+        document.getElementById("output").textContent = "Asking Ollama...";
+
+        const res = await fetch("http://localhost:11434/api/chat", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "gemma3:12b",
+            messages: [
+              { role: "system", content: "You are a helpful assistant. Answer based on the provided context." },
+              { role: "user", content: prompt }
+            ],
+            stream: false
+          })
+        });
+
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+
+        const json = await res.json();
+        const answer = json.message?.content || json.choices?.[0]?.message?.content || "No response received.";
+        document.getElementById("output").innerHTML = `<strong>Answer:</strong><br>${answer.replace(/\n/g, '<br>')}`;
+      } catch (error) {
+        let errorMsg = `<strong>Error:</strong> ${error.message}<br><br>`;
+        
+        if (error.message.includes('CORS') || error.message.includes('NetworkError')) {
+          errorMsg += `<strong>CORS Issue Detected:</strong><br>
+            • Ollama doesn't allow cross-origin requests by default<br>
+            • Start Ollama with CORS enabled: <code>OLLAMA_ORIGINS=* ollama serve</code><br>
+            • Or use a browser extension to disable CORS (for testing only)<br><br>`;
+        }
+        
+        errorMsg += `<em>Troubleshooting checklist:</em><br>
+          • Make sure Ollama is running: <code>ollama serve</code><br>
+          • Check if the model is available: <code>ollama list</code><br>
+          • Try pulling the model: <code>ollama pull gemma3:12b</code><br>
+          • For CORS: <code>OLLAMA_ORIGINS=* ollama serve</code>`;
+          
+        document.getElementById("output").innerHTML = errorMsg;
+      }
+    }
+
+    document.getElementById("fileInput").addEventListener("change", e => {
+      if (e.target.files[0]) {
+        processFile(e.target.files[0]);
+      }
+    });
+    
+    document.getElementById("queryBtn").addEventListener("click", () => {
+      const query = document.getElementById("queryInput").value.trim();
+      if (query) askQuestion(query);
+    });
+
+    document.getElementById("queryInput").addEventListener("input", updateButtonState);
+    document.getElementById("queryInput").addEventListener("keypress", (e) => {
+      if (e.key === "Enter" && !document.getElementById("queryBtn").disabled) {
+        const query = document.getElementById("queryInput").value.trim();
+        if (query) askQuestion(query);
+      }
+    });
+
+    // Initialize button state and model
+    updateButtonState();
+    initModel();
+  </script>
+</body>
+</html>
