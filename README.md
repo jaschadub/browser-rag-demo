@@ -1,6 +1,6 @@
 # In-Browser RAG Demo
 
-A browser-based Retrieval-Augmented Generation (RAG) demo that processes PDF and Excel files locally and queries them using Ollama.
+A browser-based Retrieval-Augmented Generation (RAG) demo that processes PDF and Excel files locally and queries them using Ollama. By using Ollama for local LLM access no data leaves the local machine. 
 
 ## Features
 
